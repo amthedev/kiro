@@ -2,3 +2,4 @@ fastapi
 uvicorn[standard]
 loguru
 python-dotenv
+httpx[http2]

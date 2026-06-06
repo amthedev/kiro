@@ -185,10 +185,10 @@ ADMIN_HTML = """<!DOCTYPE html>
     <!-- Accounts -->
     <div id="page-accounts" class="page">
       <div class="page-title">Contas Kiro</div>
-      <div id="cli-warning" class="card" style="display:none;border-color:var(--warn);background:rgba(255,169,77,.08)">
-        <div style="font-size:13px;color:var(--warn)">
-          &#x26A0; <strong>kiro-cli não encontrado neste servidor.</strong>
-          As contas podem ser cadastradas, mas as requisições falharão até o kiro-cli estar disponível.
+      <div class="card" style="border-color:var(--accent2);background:rgba(0,212,170,.05)">
+        <div style="font-size:13px;color:var(--accent2)">
+          ✅ <strong>Modo HTTP direto ativo.</strong>
+          As chaves ksk_ são trocadas por access tokens automaticamente — sem kiro-cli necessário.
         </div>
       </div>
       <div class="card">
@@ -426,12 +426,6 @@ function renderBarChart(elId, rows, labelKey, valKey) {
 
 // Accounts
 function loadAccounts() {
-  // Check kiro-cli availability
-  fetch('/admin/api/kirocli-status', {headers: authHeader()})
-    .then(r => r.json()).then(d => {
-      document.getElementById('cli-warning').style.display = d.available ? 'none' : 'block';
-    });
-
   fetch('/admin/api/kiro-accounts', {headers: authHeader()})
     .then(r => r.json()).then(accounts => {
       const tb = document.getElementById('accounts-table');

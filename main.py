@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Kiro Gateway — Anthropic/OpenAI-compatible proxy backed by kiro-cli.
+Kiro Gateway — Anthropic/OpenAI-compatible proxy backed by HTTP calls to Kiro.
 
 Each Kiro account is a `ksk_` API key. Requests from Claude Code / Claude
-Desktop hit this gateway, which drives the official kiro-cli to talk to Kiro
-and translates the answer back into Anthropic/OpenAI format.
+Desktop hit this gateway, which exchanges the ksk_ key for an OAuth access token
+and calls runtime.kiro.dev directly — no kiro-cli binary needed.
 
 Usage:
     python main.py                  # 0.0.0.0:8000
@@ -30,8 +30,7 @@ from loguru import logger
 
 from kiro.database import init_db
 from kiro.routes_admin import router as admin_router
-from kiro.routes_proxy import router as proxy_router
-from kiro.kirocli_runner import get_kirocli_path
+from kiro.routes_proxy import router as proxy_router, close_http_client
 
 DEFAULT_SERVER_HOST = "0.0.0.0"
 DEFAULT_SERVER_PORT = 8000
@@ -70,26 +69,20 @@ for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting Kiro Gateway...")
+    logger.info("Starting Kiro Gateway (HTTP mode)...")
     init_db()
     logger.info("Database initialized (admin.db)")
-
-    cli = get_kirocli_path()
-    if cli:
-        logger.info(f"kiro-cli found at: {cli}")
-    else:
-        logger.warning("kiro-cli NOT found. Set KIRO_CLI_PATH or place it in ./bin/kiro-cli")
-        logger.warning("The proxy endpoints will return 503 until kiro-cli is available.")
-
+    logger.info("Using direct HTTP calls to runtime.kiro.dev — no kiro-cli needed")
     logger.info("Admin panel available at /admin")
     yield
     logger.info("Shutting down Kiro Gateway...")
+    await close_http_client()
 
 
 app = FastAPI(
     title="Kiro Gateway",
-    description="Anthropic/OpenAI-compatible proxy backed by kiro-cli",
-    version="3.0.0",
+    description="Anthropic/OpenAI-compatible proxy backed by Kiro HTTP API",
+    version="4.0.0",
     lifespan=lifespan,
 )
 
@@ -128,11 +121,12 @@ def print_banner(host: str, port: int) -> None:
     display_host = "localhost" if host == "0.0.0.0" else host
     url = f"http://{display_host}:{port}"
     print()
-    print(f"  \033[97m\033[1m👻 Kiro Gateway v3.0.0\033[0m")
+    print(f"  \033[97m\033[1m👻 Kiro Gateway v4.0.0\033[0m")
     print()
     print(f"  \033[92m\033[1m➜  {url}\033[0m")
     print(f"  \033[2mAdmin panel:   {url}/admin\033[0m")
     print(f"  \033[2mHealth check:  {url}/health\033[0m")
+    print(f"  \033[2mMode:          HTTP direct (no kiro-cli)\033[0m")
     print()
 
 

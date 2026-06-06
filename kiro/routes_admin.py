@@ -21,7 +21,7 @@ from kiro.database import (
     list_api_clients, add_api_client, delete_api_client, toggle_api_client,
     get_usage_summary, get_recent_logs,
 )
-from kiro.kirocli_runner import verify_key, get_kirocli_path
+from kiro.kiro_client import verify_ksk_key
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -150,8 +150,8 @@ async def kiro_accounts_list(_: bool = Depends(verify_admin)):
 
 @router.get("/api/kirocli-status")
 async def kirocli_status(_: bool = Depends(verify_admin)):
-    """Whether the kiro-cli binary is available on this server."""
-    return {"available": get_kirocli_path() is not None}
+    """Compatibilidade: sempre retorna available=True (usamos HTTP direto)."""
+    return {"available": True}
 
 
 @router.post("/api/kiro-accounts")
@@ -160,30 +160,25 @@ async def kiro_account_create(body: KiroAccountCreate, _: bool = Depends(verify_
         raise HTTPException(400, "label and api_key are required")
     if not body.api_key.startswith("ksk_"):
         raise HTTPException(400, "API key must start with 'ksk_'")
-    # Validate the key against kiro-cli (best effort — won't block if CLI absent)
-    email = await verify_key(body.api_key)
-    new_id = add_kiro_account(body.label, body.api_key, email)
-    return {"id": new_id, "label": body.label, "email": email,
-            "verified": email is not None}
+    # Valida a key via HTTP (troca por token)
+    profile_arn = await verify_ksk_key(body.api_key)
+    new_id = add_kiro_account(body.label, body.api_key, profile_arn)
+    return {"id": new_id, "label": body.label, "email": profile_arn,
+            "verified": profile_arn is not None}
 
 
 @router.post("/api/kiro-accounts/{account_id}/verify")
 async def kiro_account_verify(account_id: int, _: bool = Depends(verify_admin)):
-    """Re-check a stored key against kiro-cli and update its email."""
-    accounts = {a["id"]: a for a in list_kiro_accounts()}
-    acc = accounts.get(account_id)
-    if not acc:
-        raise HTTPException(404, "Account not found")
-    # list returns masked key; re-fetch raw via direct query
+    """Re-verifica uma chave armazenada via HTTP."""
     from kiro.database import get_conn
     with get_conn() as conn:
         row = conn.execute("SELECT api_key FROM kiro_accounts WHERE id=?", (account_id,)).fetchone()
     if not row:
         raise HTTPException(404, "Account not found")
-    email = await verify_key(row["api_key"])
-    if email:
-        set_kiro_account_email(account_id, email)
-    return {"verified": email is not None, "email": email}
+    profile_arn = await verify_ksk_key(row["api_key"])
+    if profile_arn:
+        set_kiro_account_email(account_id, profile_arn)
+    return {"verified": profile_arn is not None, "email": profile_arn}
 
 
 @router.delete("/api/kiro-accounts/{account_id}")
