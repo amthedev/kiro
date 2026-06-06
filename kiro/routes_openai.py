@@ -39,6 +39,7 @@ from kiro.config import (
     APP_VERSION,
     PROFILE_ARN,
 )
+from kiro.database import get_client_by_key, log_usage
 from kiro.models_openai import (
     OpenAIModel,
     ModelList,
@@ -80,10 +81,18 @@ async def verify_api_key(auth_header: str = Security(api_key_header)) -> bool:
     Raises:
         HTTPException: 401 if key is invalid or missing
     """
-    if not auth_header or auth_header != f"Bearer {PROXY_API_KEY}":
-        logger.warning("Access attempt with invalid API key.")
-        raise HTTPException(status_code=401, detail="Invalid or missing API Key")
-    return True
+    raw_key = auth_header.removeprefix("Bearer ").strip() if auth_header else ""
+
+    # Master admin key
+    if raw_key == PROXY_API_KEY:
+        return True
+
+    # Per-client key from SQLite
+    if raw_key and get_client_by_key(raw_key):
+        return True
+
+    logger.warning("Access attempt with invalid API key.")
+    raise HTTPException(status_code=401, detail="Invalid or missing API Key")
 
 
 # --- Router ---
@@ -365,7 +374,30 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                 if response.status_code == 200:
                     # SUCCESS - report and return
                     await account_manager.report_success(account.id, request_data.model)
-                    
+
+                    # Identify calling client for usage logging
+                    _auth = request.headers.get("authorization", "")
+                    _raw_key = _auth.removeprefix("Bearer ").strip()
+                    _client = get_client_by_key(_raw_key) if _raw_key and _raw_key != PROXY_API_KEY else None
+                    try:
+                        from kiro.tokenizer import estimate_request_tokens
+                        _msgs = [msg.model_dump() for msg in request_data.messages]
+                        _tools = [t.model_dump() for t in request_data.tools] if request_data.tools else None
+                        _in_tok = estimate_request_tokens(messages=_msgs, tools=_tools)
+                        log_usage(
+                            client_id=_client["id"] if _client else None,
+                            client_name=_client["name"] if _client else "admin",
+                            account_id=account.id,
+                            account_label=account.id.split("/")[-1][:40],
+                            model=request_data.model,
+                            input_tokens=_in_tok,
+                            output_tokens=0,
+                            status="ok",
+                            endpoint="/v1/chat/completions",
+                        )
+                    except Exception:
+                        pass
+
                     # Prepare data for token counting
                     messages_for_tokenizer = [msg.model_dump() for msg in request_data.messages]
                     tools_for_tokenizer = [tool.model_dump() for tool in request_data.tools] if request_data.tools else None

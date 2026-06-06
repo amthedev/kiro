@@ -35,6 +35,7 @@ from fastapi.security import APIKeyHeader
 from loguru import logger
 
 from kiro.config import PROXY_API_KEY, PROFILE_ARN
+from kiro.database import get_client_by_key, log_usage
 from kiro.models_anthropic import (
     AnthropicMessagesRequest,
     AnthropicCountTokensRequest,
@@ -91,14 +92,21 @@ async def verify_anthropic_api_key(
     Raises:
         HTTPException: 401 if key is invalid or missing
     """
-    # Check x-api-key first (Anthropic native)
-    if x_api_key and x_api_key == PROXY_API_KEY:
+    # Resolve raw key from either header
+    raw_key = x_api_key or ""
+    if not raw_key and authorization:
+        raw_key = authorization.removeprefix("Bearer ").strip()
+
+    # Master admin key (from .env)
+    if raw_key == PROXY_API_KEY:
         return True
-    
-    # Fall back to Authorization: Bearer
-    if authorization and authorization == f"Bearer {PROXY_API_KEY}":
-        return True
-    
+
+    # Per-client key stored in SQLite
+    if raw_key:
+        client = get_client_by_key(raw_key)
+        if client:
+            return True
+
     logger.warning("Access attempt with invalid API key (Anthropic endpoint)")
     raise HTTPException(
         status_code=401,
@@ -436,6 +444,32 @@ async def messages(
                 if response.status_code == 200:
                     # SUCCESS - report and return
                     await account_manager.report_success(account.id, request_data.model)
+
+                    # Identify calling client for usage logging
+                    _raw_key = request.headers.get("x-api-key") or ""
+                    if not _raw_key:
+                        _auth = request.headers.get("authorization", "")
+                        _raw_key = _auth.removeprefix("Bearer ").strip()
+                    _client = get_client_by_key(_raw_key) if _raw_key and _raw_key != PROXY_API_KEY else None
+                    _in_tok = estimate_request_tokens(
+                        messages=messages_for_tokenizer,
+                        tools=tools_for_tokenizer,
+                        system=system_for_tokenizer,
+                    )
+                    try:
+                        log_usage(
+                            client_id=_client["id"] if _client else None,
+                            client_name=_client["name"] if _client else "admin",
+                            account_id=account.id,
+                            account_label=account.id.split("/")[-1][:40],
+                            model=request_data.model,
+                            input_tokens=_in_tok,
+                            output_tokens=0,
+                            status="ok",
+                            endpoint="/v1/messages",
+                        )
+                    except Exception:
+                        pass
                     
                     if request_data.stream:
                         # Streaming mode

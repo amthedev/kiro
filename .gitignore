@@ -26,6 +26,7 @@ debug*.json
 # Project-specific
 _notes/
 requests/
+admin.db
 
 # Testing
 .pytest_cache/

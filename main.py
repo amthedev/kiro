@@ -86,8 +86,10 @@ from kiro.model_resolver import ModelResolver
 from kiro.account_manager import AccountManager
 from kiro.routes_openai import router as openai_router
 from kiro.routes_anthropic import router as anthropic_router
+from kiro.routes_admin import router as admin_router
 from kiro.exceptions import validation_exception_handler
 from kiro.debug_middleware import DebugLoggerMiddleware
+from kiro.database import init_db
 
 
 # --- Loguru Configuration ---
@@ -332,6 +334,8 @@ async def lifespan(app: FastAPI):
     concurrent requests efficiently (fixes issue #24).
     """
     logger.info("Starting application... Creating state managers.")
+    init_db()
+    logger.info("Admin database initialized (admin.db)")
     
     # Create shared HTTP client with connection pooling
     # This reduces memory usage and enables connection reuse across requests
@@ -570,6 +574,9 @@ app.include_router(openai_router)
 
 # Anthropic-compatible API: /v1/messages
 app.include_router(anthropic_router)
+
+# Admin panel: /admin
+app.include_router(admin_router)
 
 
 # --- Uvicorn log config ---
