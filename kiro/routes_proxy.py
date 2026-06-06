@@ -38,9 +38,18 @@ def _resolve_client(x_api_key: Optional[str], authorization: Optional[str]):
     if not raw and authorization:
         raw = authorization.removeprefix("Bearer ").strip()
     if not raw:
+        logger.warning(
+            "401: no API key — x-api-key=%r, authorization=%r",
+            (x_api_key[:12] + "…") if x_api_key else None,
+            (authorization[:20] + "…") if authorization else None,
+        )
         raise HTTPException(401, "Missing API key")
     client = get_client_by_key(raw)
     if not client:
+        logger.warning(
+            "401: invalid API key (prefix=%r len=%d)",
+            raw[:10], len(raw)
+        )
         raise HTTPException(401, "Invalid API key")
     return client
 
