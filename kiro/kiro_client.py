@@ -13,9 +13,7 @@ tokens em memória e renova quando necessário.
 
 import asyncio
 import json
-import time
 import uuid
-from datetime import datetime, timezone, timedelta
 from typing import AsyncIterator, Dict, List, Optional, Tuple
 
 import httpx
@@ -27,15 +25,9 @@ from loguru import logger
 
 REGION = "us-east-1"
 
-# Trocar ksk_ por tokens OAuth
-TOKEN_EXCHANGE_URL = f"https://prod.{REGION}.auth.desktop.kiro.dev/exchangeToken"
-# Renovar access token usando refresh token
-TOKEN_REFRESH_URL = f"https://prod.{REGION}.auth.desktop.kiro.dev/refreshToken"
-# Endpoint de chat
+# Endpoint de chat — AWS CodeWhisperer via runtime.kiro.dev
 KIRO_API_URL = f"https://runtime.{REGION}.kiro.dev/generateAssistantResponse"
 
-# Renova quando faltam 5 minutos para expirar
-REFRESH_THRESHOLD_SECONDS = 300
 REQUEST_TIMEOUT = 300.0
 
 
@@ -54,164 +46,35 @@ class KiroAPIError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Estado de autenticação por conta
+# Headers AWS CodeWhisperer
 # ---------------------------------------------------------------------------
 
-class AccountTokens:
-    """Tokens OAuth para uma conta ksk_."""
-
-    def __init__(self):
-        self.access_token: Optional[str] = None
-        self.refresh_token: Optional[str] = None
-        self.profile_arn: Optional[str] = None
-        self.expires_at: Optional[datetime] = None
-        self._lock = asyncio.Lock()
-
-    def is_expiring_soon(self) -> bool:
-        if not self.expires_at or not self.access_token:
-            return True
-        now = datetime.now(timezone.utc)
-        return (self.expires_at - now).total_seconds() < REFRESH_THRESHOLD_SECONDS
-
-    def is_expired(self) -> bool:
-        if not self.expires_at:
-            return True
-        return datetime.now(timezone.utc) >= self.expires_at
-
-
-# Dicionário global: account_id → AccountTokens
-_account_tokens: Dict[int, AccountTokens] = {}
-_tokens_lock = asyncio.Lock()
-
-
-def _get_or_create_tokens(account_id: int) -> AccountTokens:
-    if account_id not in _account_tokens:
-        _account_tokens[account_id] = AccountTokens()
-    return _account_tokens[account_id]
-
-
-def evict_account_tokens(account_id: int) -> None:
-    """Remove tokens de uma conta (ex: quando ela é deletada)."""
-    _account_tokens.pop(account_id, None)
-
-
-# ---------------------------------------------------------------------------
-# Autenticação
-# ---------------------------------------------------------------------------
-
-def _parse_expires_at(value: Optional[str], expires_in: Optional[int]) -> datetime:
-    """Converte expiresAt (ISO 8601) ou expiresIn (segundos) para datetime UTC."""
-    if value:
-        try:
-            s = value.replace("Z", "+00:00")
-            return datetime.fromisoformat(s)
-        except Exception:
-            pass
-    if expires_in:
-        return datetime.now(timezone.utc) + timedelta(seconds=expires_in - 60)
-    # Fallback: 1 hora
-    return datetime.now(timezone.utc) + timedelta(hours=1)
-
-
-async def _exchange_ksk_token(ksk_key: str, client: httpx.AsyncClient) -> AccountTokens:
+def _build_headers(ksk_key: str) -> dict:
     """
-    Troca uma ksk_ key por access/refresh tokens.
-    POST /exchangeToken com body {"apiKey": "ksk_..."}
+    Constrói os headers necessários para chamar runtime.kiro.dev.
+    A ksk_ key é usada diretamente como Bearer token.
     """
-    payload = {"apiKey": ksk_key}
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "KiroIDE/1.0",
+    import hashlib
+    import socket
+    import getpass
+    fingerprint = hashlib.sha256(
+        f"{socket.gethostname()}-{getpass.getuser()}-kiro-gateway".encode()
+    ).hexdigest()
+
+    return {
+        "Authorization": f"Bearer {ksk_key}",
+        "Content-Type": "application/x-amz-json-1.0",
+        "x-amz-target": "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+        "User-Agent": (
+            f"aws-sdk-js/1.0.27 ua/2.1 os/linux#5.0 lang/js md/nodejs#22.0.0 "
+            f"api/codewhispererstreaming#1.0.27 m/E KiroIDE-0.7.45-{fingerprint}"
+        ),
+        "x-amz-user-agent": f"aws-sdk-js/1.0.27 KiroIDE-0.7.45-{fingerprint}",
+        "x-amzn-codewhisperer-optout": "true",
+        "x-amzn-kiro-agent-mode": "vibe",
+        "amz-sdk-invocation-id": str(uuid.uuid4()),
+        "amz-sdk-request": "attempt=1; max=3",
     }
-    try:
-        resp = await client.post(TOKEN_EXCHANGE_URL, json=payload, headers=headers, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-    except httpx.HTTPStatusError as e:
-        raise KiroAuthError(f"Token exchange failed ({e.response.status_code}): {e.response.text[:300]}")
-    except Exception as e:
-        raise KiroAuthError(f"Token exchange request failed: {e}")
-
-    access_token = data.get("accessToken")
-    if not access_token:
-        raise KiroAuthError(f"No accessToken in exchange response: {data}")
-
-    tokens = AccountTokens()
-    tokens.access_token = access_token
-    tokens.refresh_token = data.get("refreshToken")
-    tokens.profile_arn = data.get("profileArn")
-    tokens.expires_at = _parse_expires_at(data.get("expiresAt"), data.get("expiresIn"))
-    return tokens
-
-
-async def _refresh_access_token(tokens: AccountTokens, client: httpx.AsyncClient) -> None:
-    """
-    Renova o access token usando o refresh token.
-    POST /refreshToken com body {"refreshToken": "..."}
-    """
-    if not tokens.refresh_token:
-        raise KiroAuthError("No refresh token available — need to re-exchange ksk_ key")
-
-    payload = {"refreshToken": tokens.refresh_token}
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "KiroIDE/1.0",
-    }
-    try:
-        resp = await client.post(TOKEN_REFRESH_URL, json=payload, headers=headers, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-    except httpx.HTTPStatusError as e:
-        raise KiroAuthError(f"Token refresh failed ({e.response.status_code}): {e.response.text[:300]}")
-    except Exception as e:
-        raise KiroAuthError(f"Token refresh request failed: {e}")
-
-    new_access = data.get("accessToken")
-    if not new_access:
-        raise KiroAuthError(f"No accessToken in refresh response: {data}")
-
-    tokens.access_token = new_access
-    if data.get("refreshToken"):
-        tokens.refresh_token = data["refreshToken"]
-    if data.get("profileArn"):
-        tokens.profile_arn = data["profileArn"]
-    tokens.expires_at = _parse_expires_at(data.get("expiresAt"), data.get("expiresIn"))
-    logger.debug(f"Token refreshed, expires at {tokens.expires_at.isoformat()}")
-
-
-async def get_valid_access_token(
-    account_id: int,
-    ksk_key: str,
-    client: httpx.AsyncClient,
-) -> Tuple[str, Optional[str]]:
-    """
-    Retorna (access_token, profile_arn) válidos para a conta.
-    Faz exchange/refresh automaticamente quando necessário.
-    Thread-safe via asyncio.Lock por conta.
-    """
-    tokens = _get_or_create_tokens(account_id)
-
-    async with tokens._lock:
-        # Token ainda válido
-        if tokens.access_token and not tokens.is_expiring_soon():
-            return tokens.access_token, tokens.profile_arn
-
-        # Tenta refresh se tem refresh token
-        if tokens.refresh_token and not tokens.is_expired():
-            try:
-                await _refresh_access_token(tokens, client)
-                return tokens.access_token, tokens.profile_arn
-            except KiroAuthError as e:
-                logger.warning(f"Refresh failed for account {account_id}: {e}, re-exchanging...")
-
-        # Exchange com a ksk_ key
-        new_tokens = await _exchange_ksk_token(ksk_key, client)
-        tokens.access_token = new_tokens.access_token
-        tokens.refresh_token = new_tokens.refresh_token
-        tokens.profile_arn = new_tokens.profile_arn
-        tokens.expires_at = new_tokens.expires_at
-        logger.info(f"Account {account_id}: token exchanged, expires {tokens.expires_at.isoformat()}")
-        return tokens.access_token, tokens.profile_arn
 
 
 # ---------------------------------------------------------------------------
@@ -220,14 +83,33 @@ async def get_valid_access_token(
 
 async def verify_ksk_key(ksk_key: str) -> Optional[str]:
     """
-    Verifica se uma ksk_ key é válida fazendo token exchange.
-    Retorna o profile_arn em caso de sucesso, None em caso de falha.
+    Verifica se uma ksk_ key é válida fazendo uma chamada mínima ao Kiro.
+    Retorna "valid" em caso de sucesso, None em caso de falha.
     """
+    # Tenta uma request mínima para verificar a chave
+    payload = build_kiro_payload(
+        messages=[{"role": "user", "content": "hi"}],
+        system=None,
+        model_id="claude-sonnet-4.5",
+        profile_arn=None,
+    )
+    headers = _build_headers(ksk_key)
+
     async with httpx.AsyncClient() as client:
         try:
-            tokens = await _exchange_ksk_token(ksk_key, client)
-            return tokens.profile_arn or "valid"
-        except KiroAuthError as e:
+            resp = await client.post(
+                KIRO_API_URL,
+                json=payload,
+                headers=headers,
+                timeout=15,
+            )
+            if resp.status_code in (200, 400):
+                # 400 pode ser formato inválido mas autenticação OK
+                return "valid"
+            if resp.status_code == 403:
+                return None
+            return "valid"
+        except Exception as e:
             logger.warning(f"verify_ksk_key failed: {e}")
             return None
 
@@ -396,33 +278,21 @@ async def call_kiro_streaming(
 ) -> AsyncIterator[str]:
     """
     Envia uma request ao Kiro e retorna um async iterator de chunks de texto.
-
-    Yields strings de texto conforme chegam do servidor (SSE).
-    Raises KiroAPIError em caso de falha.
+    A ksk_ key é usada diretamente como Bearer token.
     """
-    access_token, profile_arn = await get_valid_access_token(account_id, ksk_key, client)
     model_id = resolve_model_id(model)
-    payload = build_kiro_payload(messages, system, model_id, profile_arn)
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-        "User-Agent": "KiroIDE/1.0",
-    }
+    payload = build_kiro_payload(messages, system, model_id, None)
+    headers = _build_headers(ksk_key)
 
     async with client.stream(
         "POST",
         KIRO_API_URL,
-        json=payload,
+        content=json.dumps(payload).encode(),
         headers=headers,
         timeout=httpx.Timeout(connect=30.0, read=REQUEST_TIMEOUT, write=30.0, pool=30.0),
     ) as resp:
         if resp.status_code == 403:
-            # Token expirou no meio — force refresh e levanta erro para retry
-            async with _get_or_create_tokens(account_id)._lock:
-                _get_or_create_tokens(account_id).access_token = None
-            raise KiroAPIError("Token expired (403)", status_code=403)
+            raise KiroAPIError("Invalid or expired ksk_ key (403)", status_code=403)
 
         if resp.status_code != 200:
             body = await resp.aread()
