@@ -247,3 +247,40 @@ async def client_toggle(client_id: int, body: ToggleRequest, _: bool = Depends(v
 @router.get("/api/logs")
 async def usage_logs(_: bool = Depends(verify_admin)):
     return get_recent_logs(limit=200)
+
+
+# ---------------------------------------------------------------------------
+# Debug: raw response from Kiro API for an account
+# ---------------------------------------------------------------------------
+
+@router.get("/api/debug/account/{account_id}")
+async def debug_account(account_id: int, _: bool = Depends(verify_admin)):
+    """Mostra o response raw de ListAvailableModels para diagnosticar profileArn."""
+    import httpx as _httpx
+    from kiro.database import get_conn as _get_conn
+    from kiro.kiro_client import _build_headers, KIRO_MODELS_URL
+
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT api_key, profile_arn FROM kiro_accounts WHERE id=?", (account_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Account not found")
+
+    headers = _build_headers(row["api_key"])
+    list_headers = dict(headers)
+    list_headers["x-amz-target"] = "AmazonQDeveloperStreamingService.ListAvailableModels"
+    list_headers.pop("x-amzn-kiro-agent-mode", None)
+    list_headers.pop("x-amzn-codewhisperer-optout", None)
+
+    async with _httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(KIRO_MODELS_URL, headers=list_headers, timeout=15)
+            return {
+                "status": resp.status_code,
+                "stored_profile_arn": row["profile_arn"],
+                "response_keys": list(resp.json().keys()) if resp.status_code == 200 else None,
+                "response_preview": resp.text[:500],
+            }
+        except Exception as e:
+            return {"error": str(e)}
