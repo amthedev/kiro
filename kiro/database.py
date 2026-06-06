@@ -40,8 +40,29 @@ def get_conn():
         conn.close()
 
 
+def _kiro_accounts_columns(conn) -> set:
+    rows = conn.execute("PRAGMA table_info(kiro_accounts)").fetchall()
+    return {r["name"] for r in rows}
+
+
+def _migrate_kiro_accounts(conn) -> None:
+    """
+    If the kiro_accounts table exists with the old schema (refresh_token,
+    profile_arn, region), drop and recreate it with the new ksk_ schema.
+    Existing accounts in the old schema are unusable with the new backend,
+    so we drop them outright.
+    """
+    cols = _kiro_accounts_columns(conn)
+    if cols and "api_key" not in cols:
+        # Old schema detected → drop and recreate
+        conn.execute("DROP TABLE kiro_accounts")
+
+
 def init_db() -> None:
     with get_conn() as conn:
+        # Migrate first so CREATE TABLE IF NOT EXISTS does the right thing
+        _migrate_kiro_accounts(conn)
+
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
