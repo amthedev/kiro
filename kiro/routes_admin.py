@@ -2,20 +2,20 @@
 """
 Admin panel API routes — /admin/*
 
-All endpoints require the ADMIN_PASSWORD env var as Bearer token.
-The HTML panel is served at GET /admin.
+Password is stored as SHA-256 hash in SQLite (settings table).
+On first access, /admin/api/setup allows setting the initial password.
 """
 
-import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Security
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Security
+from fastapi.responses import HTMLResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
 from kiro.admin_ui import ADMIN_HTML
 from kiro.database import (
+    is_first_setup, set_admin_password, verify_admin_password,
     list_kiro_accounts, add_kiro_account, update_kiro_account,
     delete_kiro_account, toggle_kiro_account,
     list_api_clients, add_api_client, delete_api_client, toggle_api_client,
@@ -24,19 +24,16 @@ from kiro.database import (
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "admin-change-me")
-
 _auth_header = APIKeyHeader(name="Authorization", auto_error=False)
 
 
 def verify_admin(authorization: Optional[str] = Security(_auth_header)) -> bool:
+    if is_first_setup():
+        raise HTTPException(status_code=403, detail="Setup required")
     token = ""
     if authorization:
-        if authorization.lower().startswith("bearer "):
-            token = authorization[7:]
-        else:
-            token = authorization
-    if token != ADMIN_PASSWORD:
+        token = authorization.removeprefix("Bearer ").strip()
+    if not verify_admin_password(token):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return True
 
@@ -52,6 +49,32 @@ async def admin_panel():
 
 
 # ---------------------------------------------------------------------------
+# Setup (first access only)
+# ---------------------------------------------------------------------------
+
+class SetupRequest(BaseModel):
+    password: str
+    confirm: str
+
+
+@router.get("/api/setup-status")
+async def setup_status():
+    return {"needs_setup": is_first_setup()}
+
+
+@router.post("/api/setup")
+async def admin_setup(body: SetupRequest):
+    if not is_first_setup():
+        raise HTTPException(400, "Already configured")
+    if len(body.password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    if body.password != body.confirm:
+        raise HTTPException(400, "Passwords do not match")
+    set_admin_password(body.password)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # Login
 # ---------------------------------------------------------------------------
 
@@ -61,7 +84,31 @@ class LoginRequest(BaseModel):
 
 @router.post("/api/login")
 async def admin_login(body: LoginRequest):
-    return {"ok": body.password == ADMIN_PASSWORD}
+    if is_first_setup():
+        return {"ok": False, "needs_setup": True}
+    return {"ok": verify_admin_password(body.password)}
+
+
+# ---------------------------------------------------------------------------
+# Change password
+# ---------------------------------------------------------------------------
+
+class ChangePasswordRequest(BaseModel):
+    current: str
+    new_password: str
+    confirm: str
+
+
+@router.post("/api/change-password")
+async def change_password(body: ChangePasswordRequest, _: bool = Depends(verify_admin)):
+    if not verify_admin_password(body.current):
+        raise HTTPException(400, "Current password is incorrect")
+    if len(body.new_password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    if body.new_password != body.confirm:
+        raise HTTPException(400, "Passwords do not match")
+    set_admin_password(body.new_password)
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +142,6 @@ class ToggleRequest(BaseModel):
 @router.get("/api/kiro-accounts")
 async def kiro_accounts_list(_: bool = Depends(verify_admin)):
     accounts = list_kiro_accounts()
-    # Never expose refresh tokens in list responses
     for a in accounts:
         a["refresh_token"] = a["refresh_token"][:8] + "…" if a.get("refresh_token") else ""
     return accounts

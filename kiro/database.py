@@ -9,6 +9,7 @@ Manages:
 """
 
 import hashlib
+import hmac
 import secrets
 import sqlite3
 import time
@@ -42,6 +43,11 @@ def get_conn():
 def init_db() -> None:
     with get_conn() as conn:
         conn.executescript("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS kiro_accounts (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 label       TEXT NOT NULL,
@@ -286,3 +292,38 @@ def get_recent_logs(limit: int = 100, client_id: Optional[int] = None) -> List[D
                 (limit,)
             ).fetchall()
         return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Admin password (stored as SHA-256 hash in settings table)
+# ---------------------------------------------------------------------------
+
+def _hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def is_first_setup() -> bool:
+    """Returns True if no admin password has been set yet."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key='admin_password_hash'"
+        ).fetchone()
+        return row is None
+
+
+def set_admin_password(password: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('admin_password_hash', ?)",
+            (_hash_password(password),)
+        )
+
+
+def verify_admin_password(password: str) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key='admin_password_hash'"
+        ).fetchone()
+        if not row:
+            return False
+        return hmac.compare_digest(row["value"], _hash_password(password))
