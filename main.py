@@ -470,62 +470,57 @@ async def lifespan(app: FastAPI):
     app.state.account_system = ACCOUNT_SYSTEM
     
     # ==============================================================================
-    # Initialize first working account (blocking)
+    # Initialize first working account (non-blocking — admin panel adds accounts)
     # ==============================================================================
     all_accounts = list(app.state.account_manager._accounts.keys())
-    
+
+    save_task = None
+
     if not all_accounts:
-        logger.error("No accounts configured in credentials.json")
-        raise RuntimeError("No accounts configured in credentials.json")
-    
-    # Determine start index from state.json
-    start_index = app.state.account_manager._current_account_index
-    
-    # Try to initialize accounts (full circle)
-    initialized = False
-    
-    for i in range(len(all_accounts)):
-        current_index = (start_index + i) % len(all_accounts)
-        account_id = all_accounts[current_index]
-        
-        logger.info(f"Attempting to initialize account: {account_id}")
-        
-        success = await app.state.account_manager._initialize_account(account_id)
-        
-        if success:
-            logger.info(f"Successfully initialized account: {account_id}")
-            initialized = True
-            break
+        logger.warning("No accounts in credentials.json — running in admin-only mode.")
+        logger.warning("Add Kiro accounts via the admin panel at /admin")
+    else:
+        # Determine start index from state.json
+        start_index = app.state.account_manager._current_account_index
+
+        initialized = False
+        for i in range(len(all_accounts)):
+            current_index = (start_index + i) % len(all_accounts)
+            account_id = all_accounts[current_index]
+
+            logger.info(f"Attempting to initialize account: {account_id}")
+            success = await app.state.account_manager._initialize_account(account_id)
+
+            if success:
+                logger.info(f"Successfully initialized account: {account_id}")
+                initialized = True
+                break
+            else:
+                logger.warning(f"Failed to initialize account: {account_id}")
+
+        if not initialized:
+            logger.warning("Failed to initialize any account — running in admin-only mode.")
         else:
-            logger.warning(f"Failed to initialize account: {account_id}")
-    
-    if not initialized:
-        logger.error("Failed to initialize any account. Check your credentials.")
-        raise RuntimeError("Failed to initialize any account")
-    
-    # Save initial state
-    await app.state.account_manager._save_state()
-    
-    # Start background task for periodic state saving
-    save_task = asyncio.create_task(
-        app.state.account_manager.save_state_periodically()
-    )
-    
-    logger.info("Account system initialized successfully")
-    
+            await app.state.account_manager._save_state()
+
+        save_task = asyncio.create_task(
+            app.state.account_manager.save_state_periodically()
+        )
+
+    logger.info("Application startup complete. Admin panel at /admin")
+
     yield
-    
+
     # Graceful shutdown
     logger.info("Shutting down application...")
-    
-    # Cancel background task
-    save_task.cancel()
-    try:
-        await save_task
-    except asyncio.CancelledError:
-        pass
-    
-    # Final state save
+
+    if save_task:
+        save_task.cancel()
+        try:
+            await save_task
+        except asyncio.CancelledError:
+            pass
+
     await app.state.account_manager._save_state()
     logger.info("Final state saved")
     

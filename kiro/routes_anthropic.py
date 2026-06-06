@@ -299,8 +299,11 @@ async def messages(
             if tool_type and tool_type.startswith("web_search"):
                 # Path A: Early return, direct MCP call
                 # Get auth_manager from first available account (no failover needed for early return)
-                account = request.app.state.account_manager.get_first_account()
-                if not account.auth_manager:
+                try:
+                    account = request.app.state.account_manager.get_first_account()
+                except RuntimeError:
+                    account = None
+                if not account or not account.auth_manager:
                     logger.error("No initialized accounts available for native web_search")
                     return JSONResponse(
                         status_code=503,
@@ -693,8 +696,11 @@ async def messages(
         # ==============================================================================
         # LEGACY MODE: Single Account (no failover)
         # ==============================================================================
-        account = request.app.state.account_manager.get_first_account()
-        if not account.auth_manager:
+        try:
+            account = request.app.state.account_manager.get_first_account()
+        except RuntimeError:
+            account = None
+        if not account or not account.auth_manager:
             logger.error("No initialized accounts available (legacy mode)")
             return JSONResponse(
                 status_code=503,

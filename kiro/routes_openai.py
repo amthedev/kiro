@@ -150,8 +150,11 @@ async def get_models(request: Request):
         available_model_ids = request.app.state.account_manager.get_all_available_models()
     else:
         # Legacy: use resolver from first account
-        account = request.app.state.account_manager.get_first_account()
-        available_model_ids = account.model_resolver.get_available_models()
+        try:
+            account = request.app.state.account_manager.get_first_account()
+            available_model_ids = account.model_resolver.get_available_models()
+        except RuntimeError:
+            available_model_ids = []
     
     # Build OpenAI-compatible model list
     openai_models = [
@@ -591,8 +594,11 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
         # ==============================================================================
         # LEGACY MODE: Single Account (no failover)
         # ==============================================================================
-        account = request.app.state.account_manager.get_first_account()
-        if not account.auth_manager:
+        try:
+            account = request.app.state.account_manager.get_first_account()
+        except RuntimeError:
+            account = None
+        if not account or not account.auth_manager:
             logger.error("No initialized accounts available (legacy mode)")
             raise HTTPException(503, "No initialized accounts available")
         auth_manager = account.auth_manager
