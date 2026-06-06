@@ -17,10 +17,11 @@ from kiro.admin_ui import ADMIN_HTML
 from kiro.database import (
     is_first_setup, set_admin_password, verify_admin_password,
     list_kiro_accounts, add_kiro_account, update_kiro_account,
-    delete_kiro_account, toggle_kiro_account,
+    delete_kiro_account, toggle_kiro_account, set_kiro_account_email,
     list_api_clients, add_api_client, delete_api_client, toggle_api_client,
     get_usage_summary, get_recent_logs,
 )
+from kiro.kirocli_runner import verify_key, get_kirocli_path
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -126,9 +127,7 @@ async def admin_stats(_: bool = Depends(verify_admin)):
 
 class KiroAccountCreate(BaseModel):
     label: str
-    refresh_token: str
-    profile_arn: Optional[str] = None
-    region: str = "us-east-1"
+    api_key: str
 
 
 class KiroAccountUpdate(KiroAccountCreate):
@@ -143,24 +142,48 @@ class ToggleRequest(BaseModel):
 async def kiro_accounts_list(_: bool = Depends(verify_admin)):
     accounts = list_kiro_accounts()
     for a in accounts:
-        a["refresh_token"] = a["refresh_token"][:8] + "…" if a.get("refresh_token") else ""
+        # Mask the ksk_ key, keep prefix visible
+        key = a.get("api_key", "")
+        a["api_key"] = (key[:10] + "…" + key[-4:]) if len(key) > 14 else "•••"
     return accounts
+
+
+@router.get("/api/kirocli-status")
+async def kirocli_status(_: bool = Depends(verify_admin)):
+    """Whether the kiro-cli binary is available on this server."""
+    return {"available": get_kirocli_path() is not None}
 
 
 @router.post("/api/kiro-accounts")
 async def kiro_account_create(body: KiroAccountCreate, _: bool = Depends(verify_admin)):
-    if not body.label or not body.refresh_token:
-        raise HTTPException(400, "label and refresh_token are required")
-    new_id = add_kiro_account(body.label, body.refresh_token, body.profile_arn, body.region)
-    return {"id": new_id, "label": body.label}
+    if not body.label or not body.api_key:
+        raise HTTPException(400, "label and api_key are required")
+    if not body.api_key.startswith("ksk_"):
+        raise HTTPException(400, "API key must start with 'ksk_'")
+    # Validate the key against kiro-cli (best effort — won't block if CLI absent)
+    email = await verify_key(body.api_key)
+    new_id = add_kiro_account(body.label, body.api_key, email)
+    return {"id": new_id, "label": body.label, "email": email,
+            "verified": email is not None}
 
 
-@router.put("/api/kiro-accounts/{account_id}")
-async def kiro_account_update(account_id: int, body: KiroAccountUpdate, _: bool = Depends(verify_admin)):
-    ok = update_kiro_account(account_id, body.label, body.refresh_token, body.profile_arn, body.region, body.enabled)
-    if not ok:
+@router.post("/api/kiro-accounts/{account_id}/verify")
+async def kiro_account_verify(account_id: int, _: bool = Depends(verify_admin)):
+    """Re-check a stored key against kiro-cli and update its email."""
+    accounts = {a["id"]: a for a in list_kiro_accounts()}
+    acc = accounts.get(account_id)
+    if not acc:
         raise HTTPException(404, "Account not found")
-    return {"ok": True}
+    # list returns masked key; re-fetch raw via direct query
+    from kiro.database import get_conn
+    with get_conn() as conn:
+        row = conn.execute("SELECT api_key FROM kiro_accounts WHERE id=?", (account_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Account not found")
+    email = await verify_key(row["api_key"])
+    if email:
+        set_kiro_account_email(account_id, email)
+    return {"verified": email is not None, "email": email}
 
 
 @router.delete("/api/kiro-accounts/{account_id}")

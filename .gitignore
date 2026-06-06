@@ -27,6 +27,11 @@ debug*.json
 _notes/
 requests/
 admin.db
+admin.db-wal
+admin.db-shm
+
+# kiro-cli binary (downloaded at deploy)
+bin/
 
 # Testing
 .pytest_cache/

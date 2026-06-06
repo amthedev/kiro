@@ -51,12 +51,13 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS kiro_accounts (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 label       TEXT NOT NULL,
-                refresh_token TEXT NOT NULL,
-                profile_arn TEXT,
-                region      TEXT NOT NULL DEFAULT 'us-east-1',
+                api_key     TEXT NOT NULL,
+                email       TEXT,
                 enabled     INTEGER NOT NULL DEFAULT 1,
                 created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                last_used   INTEGER
+                last_used   INTEGER,
+                requests    INTEGER NOT NULL DEFAULT 0,
+                failures    INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS api_clients (
@@ -102,23 +103,23 @@ def list_kiro_accounts() -> List[Dict]:
         return [dict(r) for r in rows]
 
 
-def add_kiro_account(label: str, refresh_token: str, profile_arn: Optional[str], region: str) -> int:
+def add_kiro_account(label: str, api_key: str, email: Optional[str] = None) -> int:
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO kiro_accounts (label, refresh_token, profile_arn, region) VALUES (?,?,?,?)",
-            (label, refresh_token, profile_arn, region)
+            "INSERT INTO kiro_accounts (label, api_key, email) VALUES (?,?,?)",
+            (label, api_key, email)
         )
         return cur.lastrowid
 
 
-def update_kiro_account(account_id: int, label: str, refresh_token: str,
-                        profile_arn: Optional[str], region: str, enabled: bool) -> bool:
+def update_kiro_account(account_id: int, label: str, api_key: str,
+                        email: Optional[str], enabled: bool) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
             """UPDATE kiro_accounts
-               SET label=?, refresh_token=?, profile_arn=?, region=?, enabled=?
+               SET label=?, api_key=?, email=?, enabled=?
                WHERE id=?""",
-            (label, refresh_token, profile_arn, region, int(enabled), account_id)
+            (label, api_key, email, int(enabled), account_id)
         )
         return cur.rowcount > 0
 
@@ -138,12 +139,18 @@ def toggle_kiro_account(account_id: int, enabled: bool) -> bool:
         return cur.rowcount > 0
 
 
-def mark_kiro_account_used(account_id: int) -> None:
+def mark_kiro_account_used(account_id: int, success: bool = True) -> None:
     with get_conn() as conn:
-        conn.execute(
-            "UPDATE kiro_accounts SET last_used=strftime('%s','now') WHERE id=?",
-            (account_id,)
-        )
+        if success:
+            conn.execute(
+                "UPDATE kiro_accounts SET last_used=strftime('%s','now'), requests=requests+1 WHERE id=?",
+                (account_id,)
+            )
+        else:
+            conn.execute(
+                "UPDATE kiro_accounts SET failures=failures+1 WHERE id=?",
+                (account_id,)
+            )
 
 
 def get_enabled_kiro_accounts() -> List[Dict]:
@@ -152,6 +159,14 @@ def get_enabled_kiro_accounts() -> List[Dict]:
             "SELECT * FROM kiro_accounts WHERE enabled=1 ORDER BY id"
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def set_kiro_account_email(account_id: int, email: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE kiro_accounts SET email=? WHERE id=?",
+            (email, account_id)
+        )
 
 
 # ---------------------------------------------------------------------------

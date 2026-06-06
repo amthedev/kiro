@@ -185,40 +185,33 @@ ADMIN_HTML = """<!DOCTYPE html>
     <!-- Accounts -->
     <div id="page-accounts" class="page">
       <div class="page-title">Contas Kiro</div>
+      <div id="cli-warning" class="card" style="display:none;border-color:var(--warn);background:rgba(255,169,77,.08)">
+        <div style="font-size:13px;color:var(--warn)">
+          &#x26A0; <strong>kiro-cli não encontrado neste servidor.</strong>
+          As contas podem ser cadastradas, mas as requisições falharão até o kiro-cli estar disponível.
+        </div>
+      </div>
       <div class="card">
-        <div class="card-title">Adicionar Conta</div>
+        <div class="card-title">Adicionar Conta (chave ksk_)</div>
         <div class="form-grid">
           <div class="form-group">
             <label>Label (nome identificador)</label>
-            <input id="a-label" placeholder="ex: conta1@email.com">
-          </div>
-          <div class="form-group">
-            <label>Região AWS</label>
-            <select id="a-region">
-              <option value="us-east-1">us-east-1</option>
-              <option value="eu-central-1">eu-central-1</option>
-              <option value="ap-southeast-1">ap-southeast-1</option>
-              <option value="us-west-2">us-west-2</option>
-            </select>
+            <input id="a-label" placeholder="ex: conta1, principal, etc.">
           </div>
           <div class="form-group full">
-            <label>Refresh Token (do Kiro IDE)</label>
-            <textarea id="a-token" placeholder="Cole aqui o refreshToken..."></textarea>
-          </div>
-          <div class="form-group full">
-            <label>Profile ARN (opcional)</label>
-            <input id="a-arn" placeholder="arn:aws:codewhisperer:us-east-1:...">
+            <label>API Key do Kiro (começa com ksk_)</label>
+            <input id="a-key" placeholder="ksk_..." class="mono">
           </div>
         </div>
         <div class="btn-group">
-          <button class="btn btn-primary" onclick="addAccount()">Adicionar Conta</button>
+          <button class="btn btn-primary" onclick="addAccount()">Adicionar e Validar</button>
         </div>
       </div>
       <div class="card">
         <div class="card-title">Contas Cadastradas</div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Label</th><th>Região</th><th>Profile ARN</th><th>Status</th><th>Último Uso</th><th>Ações</th></tr></thead>
+            <thead><tr><th>Label</th><th>API Key</th><th>Email</th><th>Status</th><th>Reqs</th><th>Falhas</th><th>Último Uso</th><th>Ações</th></tr></thead>
             <tbody id="accounts-table"></tbody>
           </table>
         </div>
@@ -433,18 +426,27 @@ function renderBarChart(elId, rows, labelKey, valKey) {
 
 // Accounts
 function loadAccounts() {
+  // Check kiro-cli availability
+  fetch('/admin/api/kirocli-status', {headers: authHeader()})
+    .then(r => r.json()).then(d => {
+      document.getElementById('cli-warning').style.display = d.available ? 'none' : 'block';
+    });
+
   fetch('/admin/api/kiro-accounts', {headers: authHeader()})
     .then(r => r.json()).then(accounts => {
       const tb = document.getElementById('accounts-table');
-      if (!accounts.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">Nenhuma conta ainda</td></tr>'; return; }
+      if (!accounts.length) { tb.innerHTML = '<tr><td colspan="8" class="empty">Nenhuma conta ainda</td></tr>'; return; }
       tb.innerHTML = accounts.map(a => `
         <tr>
           <td><strong>${a.label}</strong></td>
-          <td class="mono">${a.region}</td>
-          <td class="mono" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis" title="${a.profile_arn||''}">${a.profile_arn ? a.profile_arn.substring(0,40)+'…' : '—'}</td>
+          <td class="mono" style="font-size:11px">${a.api_key}</td>
+          <td>${a.email || '<span style="color:var(--warn)">não validada</span>'}</td>
           <td><span class="badge ${a.enabled ? 'badge-ok':'badge-off'}">${a.enabled ? 'Ativa':'Inativa'}</span></td>
+          <td class="mono">${a.requests || 0}</td>
+          <td class="mono">${a.failures || 0}</td>
           <td>${tsToStr(a.last_used)}</td>
           <td>
+            <button class="btn btn-ghost btn-sm" onclick="verifyAccount(${a.id})">Validar</button>
             <button class="btn btn-ghost btn-sm" onclick="toggleAccount(${a.id},${a.enabled})">${a.enabled?'Desativar':'Ativar'}</button>
             <button class="btn btn-danger btn-sm" onclick="deleteAccount(${a.id})">Remover</button>
           </td>
@@ -453,23 +455,31 @@ function loadAccounts() {
 }
 
 function addAccount() {
-  const label  = document.getElementById('a-label').value.trim();
-  const token  = document.getElementById('a-token').value.trim();
-  const arn    = document.getElementById('a-arn').value.trim();
-  const region = document.getElementById('a-region').value;
-  if (!label || !token) { toast('Label e Token são obrigatórios', true); return; }
+  const label = document.getElementById('a-label').value.trim();
+  const key   = document.getElementById('a-key').value.trim();
+  if (!label || !key) { toast('Label e API Key são obrigatórios', true); return; }
+  if (!key.startsWith('ksk_')) { toast('A chave deve começar com ksk_', true); return; }
+  toast('Validando chave...');
   fetch('/admin/api/kiro-accounts', {
     method:'POST', headers: authHeader(),
-    body: JSON.stringify({label, refresh_token:token, profile_arn:arn||null, region})
+    body: JSON.stringify({label, api_key: key})
   }).then(r=>r.json()).then(d => {
     if (d.id) {
-      toast('Conta adicionada!');
+      toast(d.verified ? `Conta adicionada e validada (${d.email})` : 'Conta adicionada (não validada — verifique a chave)');
       loadAccounts();
       document.getElementById('a-label').value='';
-      document.getElementById('a-token').value='';
-      document.getElementById('a-arn').value='';
+      document.getElementById('a-key').value='';
     } else toast(d.detail||'Erro', true);
   });
+}
+
+function verifyAccount(id) {
+  toast('Validando...');
+  fetch(`/admin/api/kiro-accounts/${id}/verify`, {method:'POST', headers: authHeader()})
+    .then(r=>r.json()).then(d => {
+      toast(d.verified ? `Válida: ${d.email}` : 'Chave inválida ou kiro-cli indisponível', !d.verified);
+      loadAccounts();
+    });
 }
 
 function toggleAccount(id, enabled) {
