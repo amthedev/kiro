@@ -49,6 +49,17 @@ fi
 export KIRO_CLI_PATH="$(pwd)/${KIRO_CLI_BIN}"
 echo "[start] KIRO_CLI_PATH=${KIRO_CLI_PATH}"
 
+# kiro-cli needs writable HOME, XDG dirs, and ~/.aws / ~/.kiro
+# On Square Cloud the default HOME may be unset or read-only.
+export HOME="${HOME:-$(pwd)/runtime_home}"
+mkdir -p "${HOME}/.aws" "${HOME}/.kiro" "${HOME}/.local/share/kiro-cli" \
+         "${HOME}/.config" "${HOME}/.cache"
+export XDG_CONFIG_HOME="${HOME}/.config"
+export XDG_DATA_HOME="${HOME}/.local/share"
+export XDG_CACHE_HOME="${HOME}/.cache"
+export KIRO_HOME="${HOME}/.kiro"
+echo "[start] HOME=${HOME}"
+
 # Start the gateway (Square Cloud uses port 80)
 PORT="${PORT:-80}"
 echo "[start] launching gateway on port ${PORT}..."

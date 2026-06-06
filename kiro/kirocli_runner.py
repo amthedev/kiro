@@ -16,6 +16,26 @@ from typing import Optional
 
 from loguru import logger
 
+
+def _ensure_runtime_dirs() -> None:
+    """
+    Make sure kiro-cli's expected directories exist under $HOME.
+    It refuses to start otherwise (ENOENT).
+    """
+    home = os.environ.get("HOME")
+    if not home or not Path(home).is_dir() or not os.access(home, os.W_OK):
+        # Fallback to a writable per-app dir
+        home = str(Path.cwd() / "runtime_home")
+        os.environ["HOME"] = home
+
+    for sub in (".aws", ".kiro", ".local/share/kiro-cli", ".config", ".cache"):
+        Path(home, sub).mkdir(parents=True, exist_ok=True)
+
+    os.environ.setdefault("XDG_CONFIG_HOME", str(Path(home, ".config")))
+    os.environ.setdefault("XDG_DATA_HOME",   str(Path(home, ".local/share")))
+    os.environ.setdefault("XDG_CACHE_HOME",  str(Path(home, ".cache")))
+    os.environ.setdefault("KIRO_HOME",       str(Path(home, ".kiro")))
+
 # Strip ANSI escape sequences (colors, cursor moves, etc.)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[=>]")
 
@@ -87,6 +107,7 @@ async def run_chat(api_key: str, prompt: str, timeout: float = 180.0) -> str:
             "kiro-cli binary not found. Set KIRO_CLI_PATH or place it in ./bin/kiro-cli"
         )
 
+    _ensure_runtime_dirs()
     env = os.environ.copy()
     env["KIRO_API_KEY"] = api_key
     env["NO_COLOR"] = "1"
@@ -133,6 +154,7 @@ async def verify_key(api_key: str, timeout: float = 30.0) -> Optional[str]:
     if not binary:
         return None
 
+    _ensure_runtime_dirs()
     env = os.environ.copy()
     env["KIRO_API_KEY"] = api_key
     env["NO_COLOR"] = "1"
