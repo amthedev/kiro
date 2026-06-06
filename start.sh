@@ -10,6 +10,13 @@ KIRO_CLI_URL="https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-x
 
 mkdir -p "${KIRO_CLI_DIR}"
 
+# Force re-download if we only have kiro-cli but not the chat helper.
+# Old deploys (before this fix) extracted only the launcher.
+if [ -f "${KIRO_CLI_BIN}" ] && [ ! -f "${KIRO_CLI_DIR}/kiro-cli-chat" ]; then
+  echo "[start] kiro-cli-chat helper missing, forcing re-download..."
+  rm -f "${KIRO_CLI_BIN}"
+fi
+
 if [ ! -f "${KIRO_CLI_BIN}" ]; then
   echo "[start] kiro-cli not found, downloading Linux build..."
   TMP_ZIP="/tmp/kirocli.zip"
@@ -24,24 +31,28 @@ if [ ! -f "${KIRO_CLI_BIN}" ]; then
   mkdir -p "${TMP_DIR}"
   unzip -q "${TMP_ZIP}" -d "${TMP_DIR}"
 
-  # Find the kiro-cli executable inside the extracted tree
-  FOUND="$(find "${TMP_DIR}" -type f -name 'kiro-cli' | head -n1)"
-  if [ -z "${FOUND}" ]; then
-    # Some builds name it 'q' or place it under bin/
-    FOUND="$(find "${TMP_DIR}" -type f \( -name 'kiro-cli' -o -name 'q' \) | head -n1)"
-  fi
-
-  if [ -z "${FOUND}" ]; then
+  # The zip ships kiro-cli AND helper binaries (kiro-cli-chat, etc.) that
+  # kiro-cli spawns at runtime. Copy them all so they stay co-located.
+  FOUND_MAIN="$(find "${TMP_DIR}" -type f -name 'kiro-cli' | head -n1)"
+  if [ -z "${FOUND_MAIN}" ]; then
     echo "[start] ERROR: kiro-cli binary not found inside the zip."
     echo "[start] Contents:"
     find "${TMP_DIR}" -maxdepth 3 -type f | head -40
     exit 1
   fi
 
-  cp "${FOUND}" "${KIRO_CLI_BIN}"
-  chmod +x "${KIRO_CLI_BIN}"
+  SRC_DIR="$(dirname "${FOUND_MAIN}")"
+  echo "[start] copying binaries from ${SRC_DIR}"
+  # Copy every regular file from the same directory as kiro-cli
+  for f in "${SRC_DIR}"/*; do
+    if [ -f "${f}" ]; then
+      cp "${f}" "${KIRO_CLI_DIR}/"
+      chmod +x "${KIRO_CLI_DIR}/$(basename "${f}")" 2>/dev/null || true
+    fi
+  done
   rm -rf "${TMP_ZIP}" "${TMP_DIR}"
-  echo "[start] kiro-cli installed at ${KIRO_CLI_BIN}"
+  echo "[start] kiro-cli + helpers installed in ${KIRO_CLI_DIR}/:"
+  ls -la "${KIRO_CLI_DIR}/" | head -10
 else
   echo "[start] kiro-cli already present at ${KIRO_CLI_BIN}"
 fi
