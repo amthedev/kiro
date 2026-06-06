@@ -138,8 +138,23 @@ async def _collect_with_retry(
     http: httpx.AsyncClient,
     max_retries: int = 2,
 ) -> tuple[str, int, int]:
-    """Coleta a resposta com retry em caso de 403 (token expirado)."""
+    """Coleta a resposta. Se profile_arn não está no banco, busca automaticamente."""
     profile_arn = account.get("profile_arn") or None
+
+    # Se não tem profileArn salvo, tenta buscar agora e salvar para próximas requests
+    if not profile_arn:
+        from kiro.kiro_client import fetch_profile_arn
+        from kiro.database import set_kiro_account_profile_arn
+        profile_arn = await fetch_profile_arn(account["api_key"])
+        if profile_arn:
+            try:
+                set_kiro_account_profile_arn(account["id"], profile_arn)
+                logger.info(f"Account {account['label']}: fetched and saved profileArn")
+            except Exception:
+                pass
+        else:
+            logger.warning(f"Account {account['label']}: could not fetch profileArn, trying without it")
+
     for attempt in range(max_retries):
         try:
             text, in_tok, out_tok = await call_kiro_complete(

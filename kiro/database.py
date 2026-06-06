@@ -232,6 +232,8 @@ def add_api_client(name: str, note: str = "") -> Dict:
 
 def delete_api_client(client_id: int) -> bool:
     with get_conn() as conn:
+        # Remove logs associados primeiro (FK constraint)
+        conn.execute("DELETE FROM usage_logs WHERE client_id=?", (client_id,))
         cur = conn.execute("DELETE FROM api_clients WHERE id=?", (client_id,))
         return cur.rowcount > 0
 
