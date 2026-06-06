@@ -74,6 +74,7 @@ def init_db() -> None:
                 label       TEXT NOT NULL,
                 api_key     TEXT NOT NULL,
                 email       TEXT,
+                profile_arn TEXT,
                 enabled     INTEGER NOT NULL DEFAULT 1,
                 created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
                 last_used   INTEGER,
@@ -110,6 +111,11 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_usage_client    ON usage_logs(client_id);
             CREATE INDEX IF NOT EXISTS idx_usage_account   ON usage_logs(account_id);
         """)
+
+        # Migração: adiciona profile_arn se não existir
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(kiro_accounts)").fetchall()}
+        if "profile_arn" not in cols:
+            conn.execute("ALTER TABLE kiro_accounts ADD COLUMN profile_arn TEXT")
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +193,14 @@ def set_kiro_account_email(account_id: int, email: str) -> None:
         conn.execute(
             "UPDATE kiro_accounts SET email=? WHERE id=?",
             (email, account_id)
+        )
+
+
+def set_kiro_account_profile_arn(account_id: int, profile_arn: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE kiro_accounts SET profile_arn=? WHERE id=?",
+            (profile_arn, account_id)
         )
 
 

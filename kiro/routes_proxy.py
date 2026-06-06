@@ -139,6 +139,7 @@ async def _collect_with_retry(
     max_retries: int = 2,
 ) -> tuple[str, int, int]:
     """Coleta a resposta com retry em caso de 403 (token expirado)."""
+    profile_arn = account.get("profile_arn") or None
     for attempt in range(max_retries):
         try:
             text, in_tok, out_tok = await call_kiro_complete(
@@ -147,12 +148,13 @@ async def _collect_with_retry(
                 messages=messages,
                 system=system,
                 model=model,
+                profile_arn=profile_arn,
                 client=http,
             )
             return text, in_tok, out_tok
         except KiroAPIError as e:
             if e.status_code == 403 and attempt < max_retries - 1:
-                logger.debug(f"Account {account['label']}: 403, retrying after token refresh...")
+                logger.debug(f"Account {account['label']}: 403, retrying...")
                 continue
             raise
 

@@ -27,6 +27,8 @@ REGION = "us-east-1"
 
 # Endpoint de chat — AWS CodeWhisperer via runtime.kiro.dev
 KIRO_API_URL = f"https://runtime.{REGION}.kiro.dev/generateAssistantResponse"
+# Endpoint para listar modelos e obter profileArn
+KIRO_MODELS_URL = f"https://runtime.{REGION}.kiro.dev/ListAvailableModels"
 
 REQUEST_TIMEOUT = 300.0
 
@@ -75,6 +77,43 @@ def _build_headers(ksk_key: str) -> dict:
         "amz-sdk-invocation-id": str(uuid.uuid4()),
         "amz-sdk-request": "attempt=1; max=3",
     }
+
+
+async def fetch_profile_arn(ksk_key: str) -> Optional[str]:
+    """
+    Busca o profileArn da conta via GET /ListAvailableModels.
+    Retorna None se não encontrar.
+    """
+    headers = _build_headers(ksk_key)
+    # Usa o header correto para ListAvailableModels
+    list_headers = dict(headers)
+    list_headers["x-amz-target"] = "AmazonQDeveloperStreamingService.ListAvailableModels"
+    list_headers.pop("x-amzn-kiro-agent-mode", None)
+    list_headers.pop("x-amzn-codewhisperer-optout", None)
+
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(KIRO_MODELS_URL, headers=list_headers, timeout=15)
+            if resp.status_code != 200:
+                logger.debug(f"ListAvailableModels returned {resp.status_code}: {resp.text[:200]}")
+                return None
+            data = resp.json()
+            # Tenta extrair profileArn direto
+            profile_arn = data.get("profileArn")
+            if profile_arn:
+                return profile_arn
+            # Tenta extrair do ARN dos modelos
+            models = data.get("models", [])
+            for m in models:
+                arn = m.get("modelArn") or m.get("profileArn")
+                if arn and "codewhisperer" in arn:
+                    parts = arn.split(":")
+                    if len(parts) >= 6:
+                        return ":".join(parts[:6])
+            return None
+        except Exception as e:
+            logger.warning(f"fetch_profile_arn failed: {e}")
+            return None
 
 
 # ---------------------------------------------------------------------------
@@ -275,13 +314,14 @@ async def call_kiro_streaming(
     system: Optional[str],
     model: str,
     client: httpx.AsyncClient,
+    profile_arn: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """
     Envia uma request ao Kiro e retorna um async iterator de chunks de texto.
     A ksk_ key é usada diretamente como Bearer token.
     """
     model_id = resolve_model_id(model)
-    payload = build_kiro_payload(messages, system, model_id, None)
+    payload = build_kiro_payload(messages, system, model_id, profile_arn)
     headers = _build_headers(ksk_key)
 
     async with client.stream(
@@ -312,6 +352,7 @@ async def call_kiro_complete(
     system: Optional[str],
     model: str,
     client: httpx.AsyncClient,
+    profile_arn: Optional[str] = None,
 ) -> Tuple[str, int, int]:
     """
     Versão não-streaming: coleta toda a resposta e retorna (text, in_tokens, out_tokens).
@@ -320,7 +361,9 @@ async def call_kiro_complete(
     in_tokens = 0
     out_tokens = 0
 
-    async for chunk in call_kiro_streaming(account_id, ksk_key, messages, system, model, client):
+    async for chunk in call_kiro_streaming(
+        account_id, ksk_key, messages, system, model, client, profile_arn
+    ):
         parts.append(chunk)
 
     text = "".join(parts)
