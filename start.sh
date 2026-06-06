@@ -59,6 +59,30 @@ fi
 echo "[start] installed binaries:"
 ls -la "${HOME_BIN}/" | head -10
 
+# Install a stripped-down agent with no tools enabled. The gateway uses
+# this via `--agent proxy_only` so kiro-cli is forced to act as a pure
+# chat model — no fs_read of /application, no execute_bash, no file
+# writes on the server. The client's IDE handles all that locally.
+PROXY_AGENT_FILE="${HOME}/.kiro/agents/proxy_only.json"
+mkdir -p "$(dirname "${PROXY_AGENT_FILE}")"
+cat > "${PROXY_AGENT_FILE}" <<'JSON'
+{
+  "name": "proxy_only",
+  "description": "Pure-chat agent: no tools, no filesystem, no shell.",
+  "prompt": null,
+  "mcpServers": {},
+  "tools": [],
+  "toolAliases": {},
+  "allowedTools": [],
+  "resources": [],
+  "hooks": {},
+  "toolsSettings": {},
+  "includeMcpJson": false,
+  "model": null
+}
+JSON
+echo "[start] installed proxy_only agent at ${PROXY_AGENT_FILE}"
+
 export KIRO_CLI_PATH="${KIRO_CLI_BIN}"
 echo "[start] KIRO_CLI_PATH=${KIRO_CLI_PATH}"
 echo "[start] HOME=${HOME}"

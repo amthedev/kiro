@@ -113,8 +113,13 @@ async def run_chat(api_key: str, prompt: str, timeout: float = 180.0) -> str:
     env["NO_COLOR"] = "1"
 
     try:
+        # The `proxy_only` agent (installed by start.sh in ~/.kiro/agents/)
+        # has `tools: []` so the model literally has no fs_read / fs_write /
+        # execute_bash available. Without this, kiro-cli would index the
+        # gateway server's filesystem (/application on Square Cloud) instead
+        # of the client's local workspace, leaking server source code.
         proc = await asyncio.create_subprocess_exec(
-            binary, "chat", "--no-interactive",
+            binary, "chat", "--no-interactive", "--agent", "proxy_only",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
